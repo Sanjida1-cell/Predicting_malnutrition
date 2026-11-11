@@ -202,7 +202,7 @@ func queryPythonPredict(ctx context.Context, req PredictionRequest) (*Prediction
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 6 * time.Second}
+	client := &http.Client{Timeout: 35 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("python ML service unreachable at %s: %w", pythonAPIURL, err)
@@ -215,7 +215,14 @@ func queryPythonPredict(ctx context.Context, req PredictionRequest) (*Prediction
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("python ML service returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		respStr := string(bodyBytes)
+		if strings.Contains(respStr, "<!DOCTYPE html>") || strings.Contains(respStr, "<html") {
+			if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable {
+				return nil, fmt.Errorf("Python ML service on Render is waking up from sleep (HTTP %d). Free-tier cloud instances spin down after inactivity. Please wait ~15-30 seconds and click Run Assessment again", resp.StatusCode)
+			}
+			return nil, fmt.Errorf("Python ML service returned HTTP %d (HTML error from cloud proxy)", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("python ML service returned HTTP %d: %s", resp.StatusCode, respStr)
 	}
 
 	var predResp PredictionResponse
@@ -309,7 +316,7 @@ func queryPythonPredictAll(ctx context.Context, baseReq PredictionRequest) (*Mul
 
 // checkBackendHealth probes Python /health
 func checkBackendHealth(ctx context.Context) HealthResponse {
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second}
 	req, _ := http.NewRequestWithContext(ctx, "GET", pythonAPIURL+"/health", nil)
 
 	pyData := make(map[string]interface{})
@@ -849,7 +856,7 @@ func main() {
 	// Models catalog proxy
 	http.HandleFunc("/api/models", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		client := &http.Client{Timeout: 3 * time.Second}
+		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Get(pythonAPIURL + "/models")
 		if err != nil {
 			// Provide fallback models catalog if python is offline

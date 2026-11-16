@@ -46,21 +46,23 @@ type ModelInfo struct {
 	Description string `json:"description"`
 }
 
-// PredictionRequest matches Predictor Set C feature schema
+// PredictionRequest matches Predictor Set A, B, and C feature schemas
 type PredictionRequest struct {
-	Month        float64 `json:"month"`
-	SexMale      int     `json:"sex_male"`
-	AreaNoakhali int     `json:"area_noakhali"`
-	Weight       float64 `json:"weight"`
-	Height       float64 `json:"height"`
-	WAZ          float64 `json:"waz"`
-	HAZ          float64 `json:"haz"`
-	WHZ          float64 `json:"whz"`
-	ModelName    string  `json:"model_name,omitempty"`
+	FeatureSet   string   `json:"feature_set,omitempty"`
+	Month        float64  `json:"month"`
+	SexMale      int      `json:"sex_male"`
+	AreaNoakhali int      `json:"area_noakhali"`
+	Weight       *float64 `json:"weight,omitempty"`
+	Height       *float64 `json:"height,omitempty"`
+	WAZ          *float64 `json:"waz,omitempty"`
+	HAZ          *float64 `json:"haz,omitempty"`
+	WHZ          *float64 `json:"whz,omitempty"`
+	ModelName    string   `json:"model_name,omitempty"`
 }
 
 // PredictionResponse represents the backend ML prediction output
 type PredictionResponse struct {
+	FeatureSet      string             `json:"feature_set,omitempty"`
 	ModelUsed       string             `json:"model_used"`
 	ModelFile       string             `json:"model_file"`
 	ModelType       string             `json:"model_type"`
@@ -76,6 +78,7 @@ type PredictionResponse struct {
 
 // MultiModelPredictionResponse aggregates predictions across all 7 models
 type MultiModelPredictionResponse struct {
+	FeatureSet         string                        `json:"feature_set,omitempty"`
 	ConsensusStatus    string                        `json:"consensus_status"`
 	MalnourishedCount  int                           `json:"malnourished_count"`
 	NormalCount        int                           `json:"normal_count"`
@@ -303,6 +306,7 @@ func queryPythonPredictAll(ctx context.Context, baseReq PredictionRequest) (*Mul
 	}
 
 	return &MultiModelPredictionResponse{
+		FeatureSet:         baseReq.FeatureSet,
 		ConsensusStatus:    consensusStatus,
 		MalnourishedCount:  malnourishedCount,
 		NormalCount:        normalCount,
@@ -348,9 +352,17 @@ func checkBackendHealth(ctx context.Context) HealthResponse {
 	}
 }
 
-// parsePredictionForm handles form extraction with aliases and auto-zscore fallback
+// parsePredictionForm handles form extraction across Sets A, B, and C with auto-zscore fallback
 func parsePredictionForm(r *http.Request) (PredictionRequest, bool) {
 	r.ParseForm()
+
+	featureSet := strings.TrimSpace(strings.ToLower(r.FormValue("feature_set")))
+	if featureSet == "" {
+		featureSet = strings.TrimSpace(strings.ToLower(r.FormValue("set")))
+	}
+	if featureSet == "" {
+		featureSet = "c"
+	}
 
 	// Parse month / age
 	monthStr := r.FormValue("month")
@@ -379,23 +391,62 @@ func parsePredictionForm(r *http.Request) (PredictionRequest, bool) {
 		areaNoakhali = 1
 	}
 
-	weight, _ := strconv.ParseFloat(r.FormValue("weight"), 64)
-	height, _ := strconv.ParseFloat(r.FormValue("height"), 64)
+	var weightPtr, heightPtr *float64
+	var wazPtr, hazPtr, whzPtr *float64
 
-	// Check if Z-scores were provided
-	wazStr := r.FormValue("waz")
-	hazStr := r.FormValue("haz")
-	whzStr := r.FormValue("whz")
+	if featureSet == "b" || featureSet == "c" {
+		if wStr := r.FormValue("weight"); wStr != "" {
+			w, err := strconv.ParseFloat(wStr, 64)
+			if err == nil {
+				weightPtr = &w
+			}
+		}
+		if hStr := r.FormValue("height"); hStr != "" {
+			h, err := strconv.ParseFloat(hStr, 64)
+			if err == nil {
+				heightPtr = &h
+			}
+		}
+	}
 
-	var waz, haz, whz float64
-	autoCalculate := r.FormValue("auto_zscore") == "1" || r.FormValue("auto_zscore") == "true" || (wazStr == "" && hazStr == "" && whzStr == "")
+	if featureSet == "c" {
+		wVal := 7.5
+		if weightPtr != nil {
+			wVal = *weightPtr
+		}
+		hVal := 85.0
+		if heightPtr != nil {
+			hVal = *heightPtr
+		}
 
-	if autoCalculate {
-		waz, haz, whz = EstimateWHOZScores(month, sexMale == 1, weight, height)
-	} else {
-		waz, _ = strconv.ParseFloat(wazStr, 64)
-		haz, _ = strconv.ParseFloat(hazStr, 64)
-		whz, _ = strconv.ParseFloat(whzStr, 64)
+		wazStr := r.FormValue("waz")
+		hazStr := r.FormValue("haz")
+		whzStr := r.FormValue("whz")
+
+		autoCalculate := r.FormValue("auto_zscore") == "1" || r.FormValue("auto_zscore") == "true" || (wazStr == "" && hazStr == "" && whzStr == "")
+		if autoCalculate {
+			waz, haz, whz := EstimateWHOZScores(month, sexMale == 1, wVal, hVal)
+			wazPtr, hazPtr, whzPtr = &waz, &haz, &whz
+		} else {
+			if wazStr != "" {
+				v, err := strconv.ParseFloat(wazStr, 64)
+				if err == nil {
+					wazPtr = &v
+				}
+			}
+			if hazStr != "" {
+				v, err := strconv.ParseFloat(hazStr, 64)
+				if err == nil {
+					hazPtr = &v
+				}
+			}
+			if whzStr != "" {
+				v, err := strconv.ParseFloat(whzStr, 64)
+				if err == nil {
+					whzPtr = &v
+				}
+			}
+		}
 	}
 
 	modelName := strings.TrimSpace(r.FormValue("model_name"))
@@ -406,14 +457,15 @@ func parsePredictionForm(r *http.Request) (PredictionRequest, bool) {
 	compareAll := r.FormValue("compare_all") == "1" || r.FormValue("compare_all") == "true"
 
 	return PredictionRequest{
+		FeatureSet:   featureSet,
 		Month:        month,
 		SexMale:      sexMale,
 		AreaNoakhali: areaNoakhali,
-		Weight:       weight,
-		Height:       height,
-		WAZ:          waz,
-		HAZ:          haz,
-		WHZ:          whz,
+		Weight:       weightPtr,
+		Height:       heightPtr,
+		WAZ:          wazPtr,
+		HAZ:          hazPtr,
+		WHZ:          whzPtr,
 		ModelName:    modelName,
 	}, compareAll
 }
@@ -456,6 +508,12 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 			statusIcon = "fa-circle-check"
 			statusTitle = "NORMAL NUTRITIONAL STATUS"
 		}
+
+		setLetter := strings.ToUpper(multi.FeatureSet)
+		if setLetter == "" {
+			setLetter = "C"
+		}
+		setLabel := "Predictor Set " + setLetter
 
 		rowsHTML := ""
 		for _, mKey := range availableModels {
@@ -501,9 +559,12 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 						<i class="fas %s"></i>
 					</div>
 					<div>
-						<span class="text-xs font-bold tracking-wider uppercase opacity-90">Multi-Model Ensemble Consensus</span>
+						<div class="flex items-center space-x-2">
+							<span class="text-xs font-bold tracking-wider uppercase opacity-90">Multi-Model Ensemble Consensus</span>
+							<span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-white">%s</span>
+						</div>
 						<h2 class="text-2xl font-black tracking-tight">%s</h2>
-						<p class="text-xs opacity-90 mt-0.5">Evaluated across all 7 Set C algorithms in %d ms</p>
+						<p class="text-xs opacity-90 mt-0.5">Evaluated across all 7 %s algorithms in %d ms</p>
 					</div>
 				</div>
 				<div class="bg-white/10 backdrop-blur-md rounded-xl px-5 py-3 text-center border border-white/20">
@@ -545,9 +606,9 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 				<div class="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
 					<h3 class="font-bold text-gray-800 flex items-center space-x-2">
 						<i class="fas fa-layer-group text-blue-600"></i>
-						<span>Individual Model Inference Results (7 Algorithms)</span>
+						<span>Individual Model Inference Results (7 Algorithms &bull; %s)</span>
 					</h3>
-					<span class="text-xs font-medium text-gray-500">Non-circular Set C Predictors</span>
+					<span class="text-xs font-medium text-gray-500">%s Features</span>
 				</div>
 				<div class="overflow-x-auto">
 					<table class="w-full text-left text-sm text-gray-600">
@@ -568,13 +629,14 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 			</div>
 		</div>
 		`,
-			statusColor, statusIcon, statusTitle, multi.LatencyMs,
+			statusColor, statusIcon, setLabel, statusTitle, setLabel, multi.LatencyMs,
 			multi.ConsensusAgreement,
 			multi.MalnourishedCount,
 			multi.MeanRisk*100,
 			getRiskBadgeClass(multi.OverallRiskLevel), multi.OverallRiskLevel,
 			getRiskBarClass(multi.OverallRiskLevel), multi.MeanRisk*100,
 			getClinicalTriageText(multi.ConsensusStatus, multi.MeanRisk),
+			setLabel, setLabel,
 			rowsHTML,
 		)
 		return
@@ -592,6 +654,37 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 		}
 
 		probPercent := single.RiskProbability * 100
+		setLetter := strings.ToUpper(single.FeatureSet)
+		if setLetter == "" {
+			setLetter = "C"
+		}
+		setLabel := "Predictor Set " + setLetter
+
+		var featureGridHTML strings.Builder
+		featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Age:</span> <span class="font-bold text-gray-800">%.1f mo</span></div>`, single.FeatureDict["month"]))
+		featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Sex:</span> <span class="font-bold text-gray-800">%s</span></div>`, formatSex(single.FeatureDict["sex_male"])))
+		featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Area:</span> <span class="font-bold text-gray-800">%s</span></div>`, formatArea(single.FeatureDict["area_noakhali"])))
+
+		if single.FeatureSet == "b" || single.FeatureSet == "c" {
+			if w, ok := single.FeatureDict["weight"]; ok {
+				featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Weight:</span> <span class="font-bold text-gray-800">%.2f kg</span></div>`, w))
+			}
+			if h, ok := single.FeatureDict["height"]; ok {
+				featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Height:</span> <span class="font-bold text-gray-800">%.1f cm</span></div>`, h))
+			}
+		}
+
+		if single.FeatureSet == "c" {
+			if waz, ok := single.FeatureDict["waz"]; ok {
+				featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">WAZ:</span> <span class="font-bold text-gray-800">%.2f</span></div>`, waz))
+			}
+			if haz, ok := single.FeatureDict["haz"]; ok {
+				featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">HAZ:</span> <span class="font-bold text-gray-800">%.2f</span></div>`, haz))
+			}
+			if whz, ok := single.FeatureDict["whz"]; ok {
+				featureGridHTML.WriteString(fmt.Sprintf(`<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">WHZ:</span> <span class="font-bold text-gray-800">%.2f</span></div>`, whz))
+			}
+		}
 
 		fmt.Fprintf(w, `
 		<div class="space-y-6 animate-fade-in">
@@ -602,9 +695,12 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 						<i class="fas %s"></i>
 					</div>
 					<div>
-						<span class="text-xs font-bold tracking-wider uppercase opacity-90">%s Inference</span>
+						<div class="flex items-center space-x-2">
+							<span class="text-xs font-bold tracking-wider uppercase opacity-90">%s Inference</span>
+							<span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-white">%s</span>
+						</div>
 						<h2 class="text-2xl font-black tracking-tight">%s</h2>
-						<p class="text-xs opacity-90 mt-0.5">Target: MUAC &lt; 12.5 cm | Pipeline: %s</p>
+						<p class="text-xs opacity-90 mt-0.5">Target: MUAC &lt; 12.5 cm | Architecture: %s</p>
 					</div>
 				</div>
 				<div class="bg-white/10 backdrop-blur-md rounded-xl px-5 py-3 text-center border border-white/20">
@@ -632,40 +728,28 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 				<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-3">
 					<h3 class="font-bold text-gray-800 flex items-center space-x-2 text-sm">
 						<i class="fas fa-sliders text-indigo-600"></i>
-						<span>Predictor Vector (Set C Inputs)</span>
+						<span>Predictor Vector (%s Inputs)</span>
 					</h3>
-					<div class="grid grid-cols-2 gap-2 text-xs">
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Age:</span> <span class="font-bold text-gray-800">%.1f mo</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Weight:</span> <span class="font-bold text-gray-800">%.2f kg</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Height:</span> <span class="font-bold text-gray-800">%.1f cm</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Sex:</span> <span class="font-bold text-gray-800">%s</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">WAZ:</span> <span class="font-bold text-gray-800">%.2f</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">HAZ:</span> <span class="font-bold text-gray-800">%.2f</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">WHZ:</span> <span class="font-bold text-gray-800">%.2f</span></div>
-						<div class="p-2 bg-gray-50 rounded-lg"><span class="text-gray-500">Area:</span> <span class="font-bold text-gray-800">%s</span></div>
+					<div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+						%s
 					</div>
 					<div class="pt-2 text-xs text-gray-400 flex justify-between">
 						<span>Inference Latency: <strong>%d ms</strong></span>
-						<span>Model: <strong>%s</strong></span>
+						<span>Model File: <strong>%s</strong></span>
 					</div>
 				</div>
 			</div>
 		</div>
 		`,
-			statusColor, statusIcon, single.ModelUsed, statusTitle, single.ModelType,
+			statusColor, statusIcon, single.ModelUsed, setLabel, statusTitle, single.ModelType,
 			probPercent, getRiskBadgeClass(single.RiskLevel), single.RiskLevel,
 			getClinicalTriageText(single.Status, single.RiskProbability),
-			single.FeatureDict["month"],
-			single.FeatureDict["weight"],
-			single.FeatureDict["height"],
-			formatSex(single.FeatureDict["sex_male"]),
-			single.FeatureDict["waz"],
-			single.FeatureDict["haz"],
-			single.FeatureDict["whz"],
-			formatArea(single.FeatureDict["area_noakhali"]),
+			setLabel,
+			featureGridHTML.String(),
 			single.LatencyMs,
 			single.ModelFile,
 		)
+		return
 	}
 }
 

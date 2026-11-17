@@ -69,7 +69,7 @@ type PredictionResponse struct {
 	Prediction      int                `json:"prediction"`
 	Status          string             `json:"status"`
 	RiskProbability float64            `json:"risk_probability"`
-	RiskLevel       string             `json:"risk_level"`
+	Threshold       float64            `json:"threshold"`
 	ModelLoaded     bool               `json:"model_loaded"`
 	FeaturesUsed    []float64          `json:"features_used"`
 	FeatureDict     map[string]float64 `json:"feature_dict"`
@@ -78,15 +78,11 @@ type PredictionResponse struct {
 
 // MultiModelPredictionResponse aggregates predictions across all 7 models
 type MultiModelPredictionResponse struct {
-	FeatureSet         string                        `json:"feature_set,omitempty"`
-	ConsensusStatus    string                        `json:"consensus_status"`
-	MalnourishedCount  int                           `json:"malnourished_count"`
-	NormalCount        int                           `json:"normal_count"`
-	ConsensusAgreement float64                       `json:"consensus_agreement"`
-	MeanRisk           float64                       `json:"mean_risk"`
-	OverallRiskLevel   string                        `json:"overall_risk_level"`
-	Results            map[string]PredictionResponse `json:"results"`
-	LatencyMs          int64                         `json:"latency_ms"`
+	FeatureSet        string                        `json:"feature_set,omitempty"`
+	MalnourishedCount int                           `json:"malnourished_count"`
+	NormalCount       int                           `json:"normal_count"`
+	Results           map[string]PredictionResponse `json:"results"`
+	LatencyMs         int64                         `json:"latency_ms"`
 }
 
 // HealthResponse reflects health state of both Go frontend and Python backend
@@ -274,7 +270,6 @@ func queryPythonPredictAll(ctx context.Context, baseReq PredictionRequest) (*Mul
 
 	malnourishedCount := 0
 	normalCount := 0
-	var sumRisk float64
 
 	for _, res := range results {
 		if res.Prediction == 1 {
@@ -282,39 +277,14 @@ func queryPythonPredictAll(ctx context.Context, baseReq PredictionRequest) (*Mul
 		} else {
 			normalCount++
 		}
-		sumRisk += res.RiskProbability
-	}
-
-	total := len(results)
-	meanRisk := 0.0
-	if total > 0 {
-		meanRisk = math.Round((sumRisk/float64(total))*1000) / 1000
-	}
-
-	consensusStatus := "Normal"
-	agreementRate := float64(normalCount) / float64(total)
-	if malnourishedCount > normalCount {
-		consensusStatus = "Malnourished"
-		agreementRate = float64(malnourishedCount) / float64(total)
-	}
-
-	riskLevel := "Low Risk"
-	if meanRisk >= 0.50 {
-		riskLevel = "High Risk"
-	} else if meanRisk >= 0.30 {
-		riskLevel = "Moderate Risk"
 	}
 
 	return &MultiModelPredictionResponse{
-		FeatureSet:         baseReq.FeatureSet,
-		ConsensusStatus:    consensusStatus,
-		MalnourishedCount:  malnourishedCount,
-		NormalCount:        normalCount,
-		ConsensusAgreement: math.Round(agreementRate*1000) / 10,
-		MeanRisk:           meanRisk,
-		OverallRiskLevel:   riskLevel,
-		Results:            results,
-		LatencyMs:          time.Since(startTime).Milliseconds(),
+		FeatureSet:        baseReq.FeatureSet,
+		MalnourishedCount: malnourishedCount,
+		NormalCount:       normalCount,
+		Results:           results,
+		LatencyMs:         time.Since(startTime).Milliseconds(),
 	}, nil
 }
 
@@ -502,11 +472,9 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 		// Multi-model consensus view
 		statusColor := "bg-rose-500 text-white"
 		statusIcon := "fa-triangle-exclamation"
-		statusTitle := "ACUTE MALNUTRITION DETECTED"
-		if multi.ConsensusStatus == "Normal" {
+		if multi.MalnourishedCount == 0 {
 			statusColor = "bg-emerald-500 text-white"
 			statusIcon = "fa-circle-check"
-			statusTitle = "NORMAL NUTRITIONAL STATUS"
 		}
 
 		setLetter := strings.ToUpper(multi.FeatureSet)
@@ -528,9 +496,7 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 			probPercent := int(res.RiskProbability * 100)
 			rowsHTML += fmt.Sprintf(`
 				<tr class="border-b border-gray-100 hover:bg-gray-50/80 transition">
-					<td class="py-3 px-4 font-medium text-gray-900 flex items-center space-x-2">
-						<span>%s</span>
-					</td>
+					<td class="py-3 px-4 font-medium text-gray-900">%s</td>
 					<td class="py-3 px-4 text-xs font-mono text-gray-500">%s</td>
 					<td class="py-3 px-4">
 						<span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border %s">
@@ -545,60 +511,34 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 							<span class="text-xs font-bold text-gray-700">%.1f%%</span>
 						</div>
 					</td>
-					<td class="py-3 px-4 text-xs text-gray-500">%s</td>
+					<td class="py-3 px-4 text-xs text-gray-500">Threshold: %.3f</td>
 				</tr>
-			`, res.ModelUsed, res.ModelType, badgeClass, res.Status, probPercent, res.RiskProbability*100, res.RiskLevel)
+			`, res.ModelUsed, res.ModelType, badgeClass, res.Status, probPercent, res.RiskProbability*100, res.Threshold)
 		}
 
 		fmt.Fprintf(w, `
 		<div class="space-y-6 animate-fade-in">
-			<!-- Consensus Header Banner -->
+			<!-- Summary Banner -->
 			<div class="rounded-2xl p-6 shadow-lg %s flex flex-col md:flex-row items-center justify-between gap-4">
 				<div class="flex items-center space-x-4">
 					<div class="w-14 h-14 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center text-3xl">
 						<i class="fas %s"></i>
 					</div>
 					<div>
-						<div class="flex items-center space-x-2">
-							<span class="text-xs font-bold tracking-wider uppercase opacity-90">Multi-Model Ensemble Consensus</span>
-							<span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-white">%s</span>
-						</div>
-						<h2 class="text-2xl font-black tracking-tight">%s</h2>
+						<span class="text-xs font-bold tracking-wider uppercase opacity-90">Research Prototype &mdash; %s Comparators</span>
+						<h2 class="text-xl font-black tracking-tight mt-0.5">%d of 7 models predict MUAC &lt; 12.5 cm</h2>
 						<p class="text-xs opacity-90 mt-0.5">Evaluated across all 7 %s algorithms in %d ms</p>
 					</div>
 				</div>
 				<div class="bg-white/10 backdrop-blur-md rounded-xl px-5 py-3 text-center border border-white/20">
-					<span class="text-xs font-medium uppercase tracking-wider block opacity-80">Model Agreement</span>
-					<span class="text-3xl font-black">%.0f%%</span>
-					<span class="text-xs block opacity-80">%d of 7 agree</span>
+					<span class="text-xs font-medium uppercase tracking-wider block opacity-80">Models predicting MUAC &lt; 12.5 cm</span>
+					<span class="text-3xl font-black">%d / 7</span>
 				</div>
 			</div>
 
-			<!-- Consensus Metrics Grid -->
-			<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-				<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
-					<span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Average Risk Probability</span>
-					<div class="mt-2 flex items-baseline space-x-2">
-						<span class="text-3xl font-black text-gray-900">%.1f%%</span>
-						<span class="text-xs font-semibold px-2 py-0.5 rounded-full %s">%s</span>
-					</div>
-					<div class="w-full bg-gray-100 rounded-full h-2 mt-3">
-						<div class="h-2 rounded-full %s" style="width: %.1f%%"></div>
-					</div>
-				</div>
-
-				<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
-					<span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Target Clinical Metric</span>
-					<div class="mt-2 text-gray-900 font-bold text-lg">Acute Malnutrition</div>
-					<p class="text-xs text-gray-500 mt-1">Mid-Upper Arm Circumference (<span class="font-bold text-rose-600">MUAC &lt; 12.5 cm</span>)</p>
-				</div>
-
-				<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
-					<span class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Triage Recommendation</span>
-					<div class="mt-2 text-sm font-semibold text-gray-800">
-						%s
-					</div>
-				</div>
+			<!-- Research Prototype Notice -->
+			<div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+				<strong>Research prototype.</strong> A positive result means the model predicts MUAC below 12.5 cm; it must be confirmed by measuring MUAC. Each model uses its own threshold chosen by inner cross-validation, not 0.5.
 			</div>
 
 			<!-- Detailed Model Comparison Table -->
@@ -606,7 +546,7 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 				<div class="px-5 py-4 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
 					<h3 class="font-bold text-gray-800 flex items-center space-x-2">
 						<i class="fas fa-layer-group text-blue-600"></i>
-						<span>Individual Model Inference Results (7 Algorithms &bull; %s)</span>
+						<span>Comparator models from the paper &mdash; %s</span>
 					</h3>
 					<span class="text-xs font-medium text-gray-500">%s Features</span>
 				</div>
@@ -614,11 +554,11 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 					<table class="w-full text-left text-sm text-gray-600">
 						<thead class="bg-gray-50/50 text-xs uppercase font-semibold text-gray-500 border-b border-gray-200">
 							<tr>
-								<th class="py-3 px-4">Model Identifier</th>
+								<th class="py-3 px-4">Model</th>
 								<th class="py-3 px-4">Architecture</th>
 								<th class="py-3 px-4">Classification</th>
-								<th class="py-3 px-4">Risk Probability</th>
-								<th class="py-3 px-4">Clinical Tier</th>
+								<th class="py-3 px-4">Score</th>
+								<th class="py-3 px-4">Threshold</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -629,13 +569,9 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 			</div>
 		</div>
 		`,
-			statusColor, statusIcon, setLabel, statusTitle, setLabel, multi.LatencyMs,
-			multi.ConsensusAgreement,
+			statusColor, statusIcon, setLabel,
+			multi.MalnourishedCount, setLabel, multi.LatencyMs,
 			multi.MalnourishedCount,
-			multi.MeanRisk*100,
-			getRiskBadgeClass(multi.OverallRiskLevel), multi.OverallRiskLevel,
-			getRiskBarClass(multi.OverallRiskLevel), multi.MeanRisk*100,
-			getClinicalTriageText(multi.ConsensusStatus, multi.MeanRisk),
 			setLabel, setLabel,
 			rowsHTML,
 		)
@@ -646,11 +582,11 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 		// Single Model View
 		statusColor := "bg-rose-500 text-white"
 		statusIcon := "fa-triangle-exclamation"
-		statusTitle := "ACUTE MALNUTRITION DETECTED"
+		statusTitle := "PREDICTED MUAC &lt; 12.5 cm"
 		if single.Prediction == 0 {
 			statusColor = "bg-emerald-500 text-white"
 			statusIcon = "fa-circle-check"
-			statusTitle = "NORMAL NUTRITIONAL STATUS"
+			statusTitle = "PREDICTED MUAC &ge; 12.5 cm"
 		}
 
 		probPercent := single.RiskProbability * 100
@@ -696,32 +632,32 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 					</div>
 					<div>
 						<div class="flex items-center space-x-2">
-							<span class="text-xs font-bold tracking-wider uppercase opacity-90">%s Inference</span>
+							<span class="text-xs font-bold tracking-wider uppercase opacity-90">Research Prototype &mdash; %s</span>
 							<span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-white">%s</span>
 						</div>
 						<h2 class="text-2xl font-black tracking-tight">%s</h2>
-						<p class="text-xs opacity-90 mt-0.5">Target: MUAC &lt; 12.5 cm | Architecture: %s</p>
+						<p class="text-xs opacity-90 mt-0.5">Architecture: %s | Threshold: %.3f</p>
 					</div>
 				</div>
 				<div class="bg-white/10 backdrop-blur-md rounded-xl px-5 py-3 text-center border border-white/20">
-					<span class="text-xs font-medium uppercase tracking-wider block opacity-80">Predicted Probability</span>
+					<span class="text-xs font-medium uppercase tracking-wider block opacity-80">Model Score</span>
 					<span class="text-3xl font-black">%.1f%%</span>
-					<span class="text-xs font-semibold px-2 py-0.5 rounded-full inline-block mt-1 %s">%s</span>
+					<span class="text-xs block opacity-80 mt-0.5">Threshold: %.3f</span>
 				</div>
 			</div>
 
-			<!-- Metrics & Clinical Recommendation -->
+			<!-- Research Notice + Predictor Vector -->
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 				<div class="bg-white p-5 rounded-xl border border-gray-200 shadow-sm space-y-4">
 					<h3 class="font-bold text-gray-800 flex items-center space-x-2 text-sm">
-						<i class="fas fa-stethoscope text-blue-600"></i>
-						<span>Clinical Triage Recommendation</span>
+						<i class="fas fa-flask text-blue-600"></i>
+						<span>Research Prototype Notice</span>
 					</h3>
-					<div class="text-sm text-gray-700 bg-blue-50/50 p-4 rounded-xl border border-blue-100">
-						%s
+					<div class="text-sm text-gray-700 bg-amber-50 p-4 rounded-xl border border-amber-200">
+						<strong>Research prototype.</strong> A positive result means the model predicts MUAC below 12.5 cm; it must be confirmed by measuring MUAC.
 					</div>
 					<div class="text-xs text-gray-500">
-						<span class="font-semibold text-gray-700">Clinical Protocol:</span> Based on WHO Child Growth Standards &amp; CMAM acute malnutrition management guidelines.
+						This prototype has not been externally validated and must not be used to guide clinical decisions about individual children.
 					</div>
 				</div>
 
@@ -741,37 +677,14 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 			</div>
 		</div>
 		`,
-			statusColor, statusIcon, single.ModelUsed, setLabel, statusTitle, single.ModelType,
-			probPercent, getRiskBadgeClass(single.RiskLevel), single.RiskLevel,
-			getClinicalTriageText(single.Status, single.RiskProbability),
+			statusColor, statusIcon, single.ModelUsed, setLabel, statusTitle, single.ModelType, single.Threshold,
+			probPercent, single.Threshold,
 			setLabel,
 			featureGridHTML.String(),
 			single.LatencyMs,
 			single.ModelFile,
 		)
 		return
-	}
-}
-
-func getRiskBadgeClass(level string) string {
-	switch level {
-	case "High Risk":
-		return "bg-rose-100 text-rose-800 border-rose-300"
-	case "Moderate Risk":
-		return "bg-amber-100 text-amber-800 border-amber-300"
-	default:
-		return "bg-emerald-100 text-emerald-800 border-emerald-300"
-	}
-}
-
-func getRiskBarClass(level string) string {
-	switch level {
-	case "High Risk":
-		return "bg-rose-500"
-	case "Moderate Risk":
-		return "bg-amber-500"
-	default:
-		return "bg-emerald-500"
 	}
 }
 
@@ -789,24 +702,6 @@ func formatArea(v float64) string {
 	return "Lakshmipur"
 }
 
-func getClinicalTriageText(status string, prob float64) string {
-	if status == "Malnourished" || prob >= 0.50 {
-		return `<strong>Severe / Moderate Acute Malnutrition Detected.</strong><br>
-		1. Conduct physical exam for bilateral pitting edema.<br>
-		2. Perform an appetite test using Ready-to-Use Therapeutic Food (RUTF).<br>
-		3. If appetite test is passed and child has no medical complications, initiate outpatient CMAM protocol.<br>
-		4. If appetite test is failed or severe edema/complications exist, execute urgent inpatient referral.`
-	} else if prob >= 0.30 {
-		return `<strong>Borderline / At-Risk Nutritional State.</strong><br>
-		1. Enroll in targeted supplementary feeding or community nutrition counseling.<br>
-		2. Review maternal infant feeding practices, dietary diversity, and micronutrient supplementation.<br>
-		3. Schedule follow-up anthropometric screening within 14 days to monitor growth faltering.`
-	}
-	return `<strong>Normal Nutritional Status.</strong><br>
-	1. Child metrics align with healthy cohort thresholds (MUAC ≥ 12.5 cm).<br>
-	2. Continue standard age-appropriate infant and young child feeding (IYCF) counseling.<br>
-	3. Recommend next routine growth monitoring at scheduled vaccination / health post visit.`
-}
 
 func main() {
 	// Support environment variables

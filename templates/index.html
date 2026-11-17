@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Child Malnutrition Clinical Risk Assessment</title>
+    <title>Child Malnutrition Prediction — Research Prototype</title>
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -66,14 +66,14 @@
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
             <div class="flex items-center space-x-3">
                 <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-500 flex items-center justify-center text-white shadow-md shadow-brand-500/20">
-                    <i class="fas fa-stethoscope text-lg"></i>
+                    <i class="fas fa-flask text-lg"></i>
                 </div>
                 <div>
                     <div class="flex items-center space-x-2">
                         <span class="text-xl font-black tracking-tight text-slate-900">Child Malnutrition <span class="text-brand-600">Prediction</span></span>
                         <span id="activeSetHeaderBadge" class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 border border-brand-200">Sets A &bull; B &bull; C</span>
                     </div>
-                    <p class="text-xs text-slate-500 font-medium hidden sm:block">Clinical Malnutrition Risk Assessment Platform</p>
+                    <p class="text-xs text-slate-500 font-medium hidden sm:block">Research Prototype — Child Malnutrition Prediction</p>
                 </div>
             </div>
 
@@ -86,7 +86,7 @@
                 </div>
 
                 <!-- API Docs Link -->
-                <a href="http://127.0.0.1:8000/docs" target="_blank" class="hidden md:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-brand-600 hover:bg-slate-100 border border-transparent hover:border-slate-200 transition">
+                <a href="{{.PythonAPIURL}}/docs" target="_blank" class="hidden md:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:text-brand-600 hover:bg-slate-100 border border-transparent hover:border-slate-200 transition">
                     <i class="fas fa-book text-slate-400"></i>
                     <span>FastAPI Docs</span>
                 </a>
@@ -106,12 +106,12 @@
         <div class="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 sm:p-4 rounded-2xl border border-slate-200 shadow-sm">
             <div class="flex items-center space-x-2 text-xs font-bold text-slate-700">
                 <i class="fas fa-clipboard-check text-brand-600"></i>
-                <span>Clinical Test Presets:</span>
+                <span>Sample cases:</span>
             </div>
             <div class="flex items-center space-x-2">
                 <button type="button" onclick="loadPreset('sam')" class="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold flex items-center space-x-1.5 transition">
                     <span class="w-2 h-2 rounded-full bg-rose-500"></span>
-                    <span>Sample SAM Case</span>
+                    <span>Sample malnourished case</span>
                 </button>
                 <button type="button" onclick="loadPreset('normal')" class="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-semibold flex items-center space-x-1.5 transition">
                     <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
@@ -359,21 +359,15 @@
                                 <option value="decision_tree">Decision Tree Classifier</option>
                             </select>
 
-                            <!-- Multi-Model Consensus Checkbox -->
-                            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                                <div>
-                                    <span class="text-xs font-bold text-slate-800 block">Ensemble Consensus Mode</span>
-                                    <span id="compareModeDesc" class="text-[11px] text-slate-500">Run inference across all 7 models in the active set simultaneously</span>
-                                </div>
-                                <input type="checkbox" id="compareAllCheckbox" name="compare_all" value="true" class="rounded border-slate-300 text-brand-600 focus:ring-brand-500 h-4 w-4">
-                            </div>
+                            <!-- Consensus checkbox: hidden, used by triggerCompareAll() -->
+                            <input type="checkbox" id="compareAllCheckbox" name="compare_all" value="true" class="hidden">
                         </div>
 
                         <!-- Submit Buttons -->
                         <div class="pt-2 space-y-2">
                             <button type="submit" id="submitBtn" class="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-700 hover:to-indigo-700 text-white font-bold text-sm shadow-md shadow-brand-500/20 flex items-center justify-center space-x-2 transition duration-200 active:scale-[0.99]">
                                 <i class="fas fa-calculator"></i>
-                                <span>Run Clinical Prediction</span>
+                                <span>Run Prediction</span>
                             </button>
 
                             <button type="button" id="compareAllBtn" onclick="triggerCompareAll()" class="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs flex items-center justify-center space-x-1.5 transition">
@@ -398,8 +392,7 @@
                         <div class="max-w-md space-y-1">
                             <h3 class="text-lg font-bold text-slate-900">Awaiting Assessment Inputs</h3>
                             <p class="text-xs text-slate-500 leading-relaxed">
-                                Select a Predictor Set (A, B, or C), provide the corresponding indicators or load a sample case, then click 
-                                <strong class="text-slate-700">"Run Clinical Prediction"</strong> to assess acute malnutrition risk.
+                                then click <strong class="text-slate-700">"Run Prediction"</strong> to get the MUAC prediction.
                             </p>
                         </div>
 
@@ -416,8 +409,8 @@
                             </div>
                             <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-100 space-y-1">
                                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Step 3</span>
-                                <span class="text-xs font-semibold text-slate-800 block">Clinical Triage</span>
-                                <p class="text-[11px] text-slate-500">Predicted acute malnutrition risk &amp; CMAM protocols.</p>
+                                <span class="text-xs font-semibold text-slate-800 block">Prediction Result</span>
+                                <p class="text-[11px] text-slate-500">Predicted MUAC classification and model score.</p>
                             </div>
                         </div>
 
@@ -434,14 +427,14 @@
                     <div class="flex items-center justify-between">
                         <span class="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center space-x-2">
                             <i class="fas fa-book-medical text-brand-600"></i>
-                            <span>Clinical Reference Thresholds</span>
+                            <span>Study Reference</span>
                         </span>
-                        <span class="text-[11px] text-slate-400 font-medium">WHO 2006 &amp; CMAM</span>
+                        <span class="text-[11px] text-slate-400 font-medium">WHO 2006</span>
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                         <div class="p-3 rounded-xl bg-slate-50 border border-slate-100">
-                            <span class="font-bold text-slate-800 block">Target Clinical Event</span>
+                            <span class="font-bold text-slate-800 block">Outcome Variable</span>
                             <span class="text-slate-500 mt-0.5 block">MUAC &lt; 12.5 cm (<strong class="text-rose-600">Acute Malnutrition</strong>)</span>
                         </div>
                         <div class="p-3 rounded-xl bg-slate-50 border border-slate-100">
@@ -476,14 +469,13 @@
 
             <div class="text-xs text-slate-600 space-y-3 leading-relaxed">
                 <p>
-                    This system integrates a high-performance Go web interface with a multi-model 
-                    FastAPI inference backend running 21 validated scikit-learn models across <strong>Predictor Sets A, B, and C</strong>.
+                    This system integrates a Go web interface with a 7-model FastAPI inference backend across <strong>Predictor Sets A, B, and C</strong>. Models are non-circular machine learning models (internally validated only); no external validation has been performed. AUC 0.71 on a held-out test set of 93 children.
                 </p>
                 <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 font-mono text-[11px]">
                     <div class="text-slate-700 font-bold">Predictor Sets Overview:</div>
                     <div>&bull; <strong>Set A</strong>: Demographics only (Age, Sex, District) &mdash; 3 features</div>
                     <div>&bull; <strong>Set B</strong>: Demographics + Body Measurements (+ Weight, Height) &mdash; 5 features</div>
-                    <div>&bull; <strong>Set C</strong>: Full Clinical (+ WHO Z-Scores: WAZ, HAZ, WHZ) &mdash; 8 features (Recommended)</div>
+                    <div>&bull; <strong>Set C</strong>: Full feature set (+ WHO Z-Scores: WAZ, HAZ, WHZ) &mdash; 8 features (Recommended)</div>
                 </div>
                 <div>
                     <strong class="text-slate-800">If ML Service is Offline:</strong>
@@ -796,7 +788,7 @@
                 `;
             } finally {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-calculator mr-2"></i><span>Run Clinical Prediction</span>';
+                btn.innerHTML = '<i class="fas fa-calculator mr-2"></i><span>Run Prediction</span>';
             }
         }
 

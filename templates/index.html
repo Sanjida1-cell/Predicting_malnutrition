@@ -134,7 +134,7 @@
                             </div>
                             <div>
                                 <h2 class="text-sm font-bold text-slate-900">Child Assessment Metrics</h2>
-                                <p id="stepSubtitle" class="text-xs text-slate-500">Predictor Set C (8 Parameters: Recommended)</p>
+                                <p id="stepSubtitle" class="text-xs text-slate-500">Predictor Set C (8 Parameters: Primary Analysis)</p>
                             </div>
                         </div>
 
@@ -177,9 +177,9 @@
                                     <span class="text-[9px] font-bold text-slate-400 mt-2 block">5 features</span>
                                 </button>
 
-                                <!-- Set C Button (Optimal / Default) -->
+                                <!-- Set C Button (Primary analysis) -->
                                 <button type="button" id="setBtnC" onclick="selectFeatureSet('c')" class="set-select-btn p-3 rounded-xl border-2 border-brand-500 bg-brand-50/50 text-left transition relative flex flex-col justify-between shadow-sm">
-                                    <span class="absolute -top-2 right-2 bg-brand-600 text-[9px] text-white font-bold px-1.5 py-0.5 rounded-full shadow-sm">Optimal</span>
+                                    <span class="absolute -top-2 right-2 bg-brand-600 text-[9px] text-white font-bold px-1.5 py-0.5 rounded-full shadow-sm">Primary</span>
                                     <div>
                                         <span class="text-xs font-black block text-brand-900">Set C</span>
                                         <span class="text-[10px] text-brand-700 font-medium block leading-tight mt-0.5">+ WHO Z-Scores</span>
@@ -350,7 +350,7 @@
                             </label>
                             
                             <select id="modelSelect" name="model_name" class="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition">
-                                <option value="logistic_regression" selected>Logistic Regression &bull; (Recommended / Optimal)</option>
+                                <option value="logistic_regression" selected>Logistic Regression &bull; (Primary model in the paper)</option>
                                 <option value="random_forest">Random Forest Classifier</option>
                                 <option value="gradient_boosting">Gradient Boosting Classifier</option>
                                 <option value="stacking_ensemble">Stacking Ensemble Classifier (Meta-Learner)</option>
@@ -469,20 +469,13 @@
 
             <div class="text-xs text-slate-600 space-y-3 leading-relaxed">
                 <p>
-                    This system integrates a Go web interface with a 7-model FastAPI inference backend across <strong>Predictor Sets A, B, and C</strong>. Models are non-circular machine learning models (internally validated only); no external validation has been performed. AUC 0.71 on a held-out test set of 93 children.
+                    This system integrates a Go web interface with a 7-model FastAPI inference backend across <strong>Predictor Sets A, B, and C</strong>. Models are non-circular machine learning models (internally validated only); no external validation has been performed. Cross-validated AUC 0.71 (internal validation only).
                 </p>
                 <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 font-mono text-[11px]">
                     <div class="text-slate-700 font-bold">Predictor Sets Overview:</div>
                     <div>&bull; <strong>Set A</strong>: Demographics only (Age, Sex, District) &mdash; 3 features</div>
                     <div>&bull; <strong>Set B</strong>: Demographics + Body Measurements (+ Weight, Height) &mdash; 5 features</div>
-                    <div>&bull; <strong>Set C</strong>: Full feature set (+ WHO Z-Scores: WAZ, HAZ, WHZ) &mdash; 8 features (Recommended)</div>
-                </div>
-                <div>
-                    <strong class="text-slate-800">If ML Service is Offline:</strong>
-                    <ol class="list-decimal list-inside mt-1 space-y-1 text-slate-500 font-mono text-[11px]">
-                        <li>Navigate to <span class="bg-slate-100 px-1 py-0.5 rounded">Malnutrition-Prediction-python-service</span></li>
-                        <li>Execute <span class="font-bold text-brand-600">run_server.bat</span> (or <span class="font-bold text-brand-600">.\run_server.ps1</span>)</li>
-                    </ol>
+                    <div>&bull; <strong>Set C</strong>: Full feature set (+ WHO Z-Scores: WAZ, HAZ, WHZ) &mdash; 8 features (Primary analysis)</div>
                 </div>
             </div>
 
@@ -602,8 +595,8 @@
                 whzInp.disabled = false;
                 whzInp.required = true;
 
-                badge.innerText = '8 Features Active (Recommended)';
-                stepSubtitle.innerText = 'Predictor Set C (8 Parameters: Recommended Full Clinical)';
+                badge.innerText = '8 Features Active (Primary analysis)';
+                stepSubtitle.innerText = 'Predictor Set C (8 Parameters: Primary Analysis)';
                 compareAllBtnText.innerText = 'Compare All 7 Models (Set C)';
                 autoComputeWHO();
             }
@@ -644,55 +637,42 @@
             }
         }
 
-        // Auto-Estimate WHO Z-Scores (LMS formula)
+        // Auto-Estimate WHO Z-Scores — calls the Go server's /api/estimate-zscores
+        // which uses the official WHO 2006 LMS tables (not a browser approximation).
+        let _zscoreTimer = null;
         function autoComputeWHO() {
             if (currentSet !== 'c') return;
             const autoToggle = document.getElementById('autoComputeToggle');
             if (!autoToggle || !autoToggle.checked) return;
 
-            const month = parseFloat(document.getElementById('monthInput').value) || 24;
+            const month = parseFloat(document.getElementById('monthInput').value);
             const sexMaleRadio = document.querySelector('input[name="sex_male"]:checked');
-            const isMale = sexMaleRadio ? sexMaleRadio.value === "1" : true;
-            const weight = parseFloat(document.getElementById('weightInput').value) || 7.5;
-            const height = parseFloat(document.getElementById('heightInput').value) || 85.0;
+            const sexMale = sexMaleRadio ? parseInt(sexMaleRadio.value) : 1;
+            const weight = parseFloat(document.getElementById('weightInput').value);
+            const height = parseFloat(document.getElementById('heightInput').value);
 
-            const m = Math.max(0, Math.min(60, month));
-            let medHeight, medWeight, hazS, wazS, wazL;
+            if (!month || !weight || !height) return;
 
-            if (isMale) {
-                medHeight = 49.9 + 2.15 * Math.pow(m, 0.82);
-                hazS = 0.038;
-                medWeight = 3.3 + 0.95 * Math.pow(m, 0.68);
-                wazS = 0.12;
-                wazL = -0.15;
-            } else {
-                medHeight = 49.1 + 2.10 * Math.pow(m, 0.82);
-                hazS = 0.039;
-                medWeight = 3.2 + 0.92 * Math.pow(m, 0.68);
-                wazS = 0.13;
-                wazL = -0.18;
-            }
-
-            function calcZ(y, l, med, s) {
-                if (y <= 0 || med <= 0 || s <= 0) return 0;
-                if (Math.abs(l) < 0.0001) return Math.log(y / med) / s;
-                return (Math.pow(y / med, l) - 1.0) / (l * s);
-            }
-
-            let haz = calcZ(height, 1.0, medHeight, hazS);
-            let waz = calcZ(weight, wazL, medWeight, wazS);
-
-            const h = Math.max(45, Math.min(120, height));
-            const medWforH = isMale ? (2.5 * Math.pow(h / 45, 2.15)) : (2.4 * Math.pow(h / 45, 2.15));
-            let whz = calcZ(weight, -0.35, medWforH, 0.095);
-
-            const clamp = v => Math.max(-6, Math.min(6, Math.round(v * 100) / 100));
-
-            document.getElementById('wazInput').value = clamp(waz).toFixed(2);
-            document.getElementById('hazInput').value = clamp(haz).toFixed(2);
-            document.getElementById('whzInput').value = clamp(whz).toFixed(2);
-
-            updateZBadges();
+            // Debounce: wait 300 ms after last keystroke before calling server
+            clearTimeout(_zscoreTimer);
+            _zscoreTimer = setTimeout(async () => {
+                try {
+                    const resp = await fetch('/api/estimate-zscores', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({month, sex_male: sexMale, weight, height})
+                    });
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    const clamp = v => Math.max(-6, Math.min(6, Math.round(v * 100) / 100));
+                    document.getElementById('wazInput').value = clamp(data.waz).toFixed(2);
+                    document.getElementById('hazInput').value = clamp(data.haz).toFixed(2);
+                    document.getElementById('whzInput').value = clamp(data.whz).toFixed(2);
+                    updateZBadges();
+                } catch (e) {
+                    // Server unavailable — leave fields as-is
+                }
+            }, 300);
         }
 
         function updateZBadges() {

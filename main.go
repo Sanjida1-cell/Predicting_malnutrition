@@ -108,83 +108,90 @@ type EstimateZScoresResponse struct {
 }
 
 // WHO 2006 Reference parameter table structures
-type LMS struct {
-	L, M, S float64
-}
-
-// calculateZ computes LMS z-score
+// calculateZ computes LMS z-score matching pygrowup formula exactly
 func calculateZ(y, l, m, s float64) float64 {
 	if s <= 0 || m <= 0 || y <= 0 {
 		return 0.0
 	}
-	if math.Abs(l) < 0.0001 {
-		return math.Log(y/m) / s
+	var z float64
+	if math.Abs(l) < 1e-6 {
+		z = math.Log(y/m) / s
+	} else {
+		z = (math.Pow(y/m, l) - 1.0) / (l * s)
 	}
-	return (math.Pow(y/m, l) - 1.0) / (l * s)
+	return math.Round(z*100) / 100
 }
 
-// EstimateWHOZScores calculates realistic WHO 2006 standard Z-scores
+// roundToHalf rounds a measurement to the nearest 0.5 (or integer if .0)
+// matching pygrowup key formatting (e.g. 65, 65.5, 85, 85.5)
+func roundToHalfStr(v float64) string {
+	rounded := math.Round(v*2.0) / 2.0
+	if rounded == math.Floor(rounded) {
+		return strconv.Itoa(int(rounded))
+	}
+	return strconv.FormatFloat(rounded, 'f', 1, 64)
+}
+
+// EstimateWHOZScores calculates exact WHO 2006 Z-scores using pygrowup 0.8.2 tables and logic
 func EstimateWHOZScores(month float64, isMale bool, weight, height float64) (waz, haz, whz float64) {
-	// Clamp values
+	// Age clamp 0 to 60 months
 	m := math.Max(0.0, math.Min(60.0, month))
+	ageInt := int(math.Floor(m))
+	ageKey := strconv.Itoa(ageInt)
 
-	// Approximate WHO median growth parameters across 0-60 months
-	var medHeight, medWeight float64
-	var hazS, wazS, wazL float64
-
+	// 1. WAZ (Weight-for-Age)
 	if isMale {
-		// Boys Height-for-age: ~49.9cm at birth to ~110.0cm at 60m
-		medHeight = 49.9 + 2.15*math.Pow(m, 0.82)
-		hazS = 0.038
-		// Boys Weight-for-age: ~3.3kg at birth to ~18.3kg at 60m
-		medWeight = 3.3 + 0.95*math.Pow(m, 0.68)
-		wazS = 0.12
-		wazL = -0.15
+		if entry, ok := tbl_wfa_boys_0_5[ageKey]; ok {
+			waz = calculateZ(weight, entry.L, entry.M, entry.S)
+		}
 	} else {
-		// Girls Height-for-age: ~49.1cm at birth to ~109.4cm at 60m
-		medHeight = 49.1 + 2.10*math.Pow(m, 0.82)
-		hazS = 0.039
-		// Girls Weight-for-age: ~3.2kg at birth to ~17.9kg at 60m
-		medWeight = 3.2 + 0.92*math.Pow(m, 0.68)
-		wazS = 0.13
-		wazL = -0.18
+		if entry, ok := tbl_wfa_girls_0_5[ageKey]; ok {
+			waz = calculateZ(weight, entry.L, entry.M, entry.S)
+		}
 	}
 
-	// Calculate HAZ (Height-for-Age)
-	if height > 0 && medHeight > 0 {
-		haz = calculateZ(height, 1.0, medHeight, hazS)
+	// 2. HAZ (Height-for-Age)
+	// pygrowup lhfa_0_5 tables store months 0-60
+	if isMale {
+		if entry, ok := tbl_lhfa_boys_0_5[ageKey]; ok {
+			haz = calculateZ(height, entry.L, entry.M, entry.S)
+		}
+	} else {
+		if entry, ok := tbl_lhfa_girls_0_5[ageKey]; ok {
+			haz = calculateZ(height, entry.L, entry.M, entry.S)
+		}
 	}
 
-	// Calculate WAZ (Weight-for-Age)
-	if weight > 0 && medWeight > 0 {
-		waz = calculateZ(weight, wazL, medWeight, wazS)
-	}
-
-	// Calculate WHZ (Weight-for-Height)
-	if height > 0 && weight > 0 {
-		h := math.Max(45.0, math.Min(120.0, height))
-		// Median weight for height curve
-		var medWeightForHeight float64
+	// 3. WHZ (Weight-for-Height / Weight-for-Length)
+	// Under 24 months: uses wfl (Weight-for-Length, 45 to 110 cm)
+	// 24 months and older: uses wfh (Weight-for-Height, 65 to 120 cm)
+	if m < 24.0 {
+		h := math.Max(45.0, math.Min(110.0, height))
+		hKey := roundToHalfStr(h)
 		if isMale {
-			medWeightForHeight = 2.5 * math.Pow(h/45.0, 2.15)
+			if entry, ok := tbl_wfl_boys_0_2[hKey]; ok {
+				whz = calculateZ(weight, entry.L, entry.M, entry.S)
+			}
 		} else {
-			medWeightForHeight = 2.4 * math.Pow(h/45.0, 2.15)
+			if entry, ok := tbl_wfl_girls_0_2[hKey]; ok {
+				whz = calculateZ(weight, entry.L, entry.M, entry.S)
+			}
 		}
-		whz = calculateZ(weight, -0.35, medWeightForHeight, 0.095)
+	} else {
+		h := math.Max(65.0, math.Min(120.0, height))
+		hKey := roundToHalfStr(h)
+		if isMale {
+			if entry, ok := tbl_wfh_boys_2_5[hKey]; ok {
+				whz = calculateZ(weight, entry.L, entry.M, entry.S)
+			}
+		} else {
+			if entry, ok := tbl_wfh_girls_2_5[hKey]; ok {
+				whz = calculateZ(weight, entry.L, entry.M, entry.S)
+			}
+		}
 	}
 
-	// Round to 3 decimal places and clamp to clinical range [-6.0, 6.0]
-	clamp := func(v float64) float64 {
-		if v < -6.0 {
-			return -6.0
-		}
-		if v > 6.0 {
-			return 6.0
-		}
-		return math.Round(v*1000) / 1000
-	}
-
-	return clamp(waz), clamp(haz), clamp(whz)
+	return
 }
 
 // queryPythonPredict makes a POST request to Python /predict
@@ -643,6 +650,7 @@ func renderHTMLResult(w http.ResponseWriter, single *PredictionResponse, multi *
 					<span class="text-xs font-medium uppercase tracking-wider block opacity-80">Model Score</span>
 					<span class="text-3xl font-black">%.1f%%</span>
 					<span class="text-xs block opacity-80 mt-0.5">Threshold: %.3f</span>
+					<span class="text-[10px] block opacity-75 mt-1 leading-tight">Score is not a calibrated risk;<br>compare with threshold</span>
 				</div>
 			</div>
 
